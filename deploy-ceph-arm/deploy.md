@@ -221,57 +221,65 @@ $ rbd unmap greatwall/test
 > 以上操作均正常，表示ceph集群可用
 
 
-# 从源码编译并部署frakti和greatwalld
-
-调用关系: kubelet -> frakti -> greatwalld
-
-为了支持ceph rbd设备，需要增加flexVolume驱动，以便解析pod中的flexVolume相关参数，
-因此需要重新编译frakti源码（含ceph rbd的flexVolume驱动）。
-
-greatwalld链接了库libvirt/librbd，因此安装ceph之后，也需要重新编译，以支持挂载ceph rbd块设备到虚拟机.
+# 部署元数据服务器 MDS
 
 
-## 部署计算节点
+## 1.分别在对应的服务器创建mds工作目录  
+```bash
+$ mkdir -p /var/lib/ceph/mds/ceph-node0
+$ mkdir -p /var/lib/ceph/mds/ceph-node1
+$ mkdir -p /var/lib/ceph/mds/ceph-node2
+$ mkdir -p /var/lib/ceph/mds/ceph-node3
+$ mkdir -p /var/lib/ceph/mds/ceph-node4
+```
 
-将frakit, cephrbd和greatwalld部署到所有计算节点,本测试环境是k8s-node2
+## 2.分别在服务器上注册mds的密钥。{$id} 是 MDS 的标识字母
+```bash
+$ ceph auth get-or-create mds.node0 mds 'allow *' osd 'allow rwx'  mon   'allow profile mds'  -o  /var/lib/ceph/mds/ceph-node0/keyring
+$ ceph auth get-or-create mds.node1 mds 'allow *' osd 'allow rwx'  mon   'allow profile mds'  -o  /var/lib/ceph/mds/ceph-node1/keyring
+$ ceph auth get-or-create mds.node2 mds 'allow *' osd 'allow rwx'  mon   'allow profile mds'  -o  /var/lib/ceph/mds/ceph-node2/keyring
+$ ceph auth get-or-create mds.node3 mds 'allow *' osd 'allow rwx'  mon   'allow profile mds'  -o  /var/lib/ceph/mds/ceph-node3/keyring
+$ ceph auth get-or-create mds.node4 mds 'allow *' osd 'allow rwx'  mon   'allow profile mds'  -o  /var/lib/ceph/mds/ceph-node4/keyring
 
 ```
-//停止服务
-$ systemctl stop kubelet frakti greatwalld
+## 3.启动mds进程
+```bash
+分别在服务器启动  
+service ceph-mds@node0 start
+service ceph-mds@node1 start
+service ceph-mds@node2 start
+service ceph-mds@node3 start
+service ceph-mds@node4 start
 
-//部署frakti和cephrbd
-$ cd $GOPATH/src/k8s.io/frakti
-$ cp -f ./out/frakti /usr/bin
-$ mkdir -p /usr/libexec/kubernetes/kubelet-plugins/volume/exec/greatwall~cephrbd
-$ cp out/cephrbd /usr/libexec/kubernetes/kubelet-plugins/volume/exec/greatwall~cephrbd/cephrbd
+手动启动  
+ceph-mds  --cluster ceph --id node{$id} --setuser ceph --setgroup ceph
+```
+查看启动状态
 
-注：kubelet将自动定位flexVolume的驱动位置，因此只需要将cephrbd放到
-/usr/libexec/kubernetes/kubelet-plugins/volume/exec/greatwall~cephrbd目录下即可
-
-
-//部署greatwalld
-$ cd ${GOPATH}/src/github.com/greatwallhq/greatwalld
-$ cp cmd/greatwalld/greatwalld -rf /usr/bin/greatwalld
-
-
-//启动服务
-$ service greatwalld start
-$ service frakti start
-$ service kubelet start
-
-//确保kubelet,frakti,greatwalld服务已启动
-$ status kubelet frakti greatwalld | grep Active -B1
-           └─05-frakti.conf, 10-kubeadm.conf
-   Active: active (running) since 二 2018-08-07 10:20:29 CST; 27min ago
---
-   Loaded: loaded (/lib/systemd/system/frakti.service; enabled; vendor preset: enabled)
-   Active: active (running) since 二 2018-08-07 10:20:25 CST; 27min ago
---
-   Loaded: loaded (/lib/systemd/system/greatwalld.service; enabled; vendor preset: enabled)
-   Active: active (running) since 二 2018-08-07 10:20:22 CST; 27min ago
+```bash
+$ ceph mds stat
+e9: 1/1/1 up {0=node3=up:active}, 4 up:standby
 ```
 
 
+# 部署cephfs
+一个 Ceph 文件系统需要至少两个 RADOS 存储池，一个用于数据、一个用于元数据
+```bash
+ceph osd pool create cephfs_data 64
+ceph osd pool create cephfs_metadata 64
+ceph fs new cephfs cephfs_metadata cephfs_data
+```
+挂载使用
+```bash
+# 获取密钥存入admin.secret文件
+cat /etc/ceph/ceph.client.admin.keyring | awk /key/{'print $3'} > /etc/ceph/admin.secret
+# 创建挂载目录
+sudo mkdir /mnt/cephfs
+# 安装cephfs客户端
+apt install ceph-fs-common
+# 挂载使用文件系统
+mount -t ceph 172.16.16.10:6789:/ /mnt/cephfs -o name=admin,secretfile=/etc/ceph/admin.secret
+```
 
 # FAQ
 
